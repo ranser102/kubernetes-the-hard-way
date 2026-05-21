@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# KTHW SCALE-DOWN: 1 CONTROLLER + 2 WORKERS PROVISIONING SCRIPT
+# KTHW SCALE-DOWN: 1 SERVER + 2 NODES PROVISIONING SCRIPT
 # ==============================================================================
 # Prerequisite: ./scripts/01-prereq/init01.sh on a new project
-# Maps docs/01-prerequisites.md: server=controller-0, node-0/1=worker-0/1
+# Uses cluster VM names: server, node-0, node-1
 # ==============================================================================
 set -euo pipefail
 
@@ -58,12 +58,12 @@ else
     --region "${KTHW_REGION}"
 fi
 
-echo "=== [Phase B] Provisioning 1 Control Plane Controller ==="
-if gcloud compute instances describe controller-0 \
+echo "=== [Phase B] Provisioning Control Plane Server ==="
+if gcloud compute instances describe server \
   --zone "${KTHW_ZONE}" >/dev/null 2>&1; then
-  echo "Already exists: instance controller-0 in ${KTHW_ZONE}"
+  echo "Already exists: instance server in ${KTHW_ZONE}"
 else
-  gcloud compute instances create controller-0 \
+  gcloud compute instances create server \
     --boot-disk-size 20GB \
     --can-ip-forward \
     --image-family debian-12 \
@@ -76,13 +76,13 @@ else
     --zone "${KTHW_ZONE}"
 fi
 
-echo "=== [Phase B] Provisioning 2 Data Plane Workers ==="
+echo "=== [Phase B] Provisioning 2 Data Plane Nodes ==="
 for i in 0 1; do
-  if gcloud compute instances describe "worker-${i}" \
+  if gcloud compute instances describe "node-${i}" \
     --zone "${KTHW_ZONE}" >/dev/null 2>&1; then
-    echo "Already exists: instance worker-${i} in ${KTHW_ZONE}"
+    echo "Already exists: instance node-${i} in ${KTHW_ZONE}"
   else
-    gcloud compute instances create "worker-${i}" \
+    gcloud compute instances create "node-${i}" \
       --boot-disk-size 20GB \
       --can-ip-forward \
       --image-family debian-12 \
@@ -97,4 +97,4 @@ for i in 0 1; do
   fi
 done
 
-echo "=== 1 Controller and 2 Workers are ready or already existed ==="
+echo "=== server, node-0, and node-1 are ready or already existed ==="

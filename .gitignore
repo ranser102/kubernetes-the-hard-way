@@ -51,3 +51,6 @@ service-account-csr.json
 .idea/
 .vscode/
 /ktwh-downloads/
+/scripts/hosts
+/scripts/hosts.internal
+/scripts/machines.txt

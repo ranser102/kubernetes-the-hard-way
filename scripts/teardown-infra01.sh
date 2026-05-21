@@ -16,7 +16,7 @@ set -euo pipefail
 
 KTHW_REGION=$(gcloud config get-value compute/region)
 KTHW_ZONE=$(gcloud config get-value compute/zone)
-KEEP_NETWORK="${KEEP_NETWORK:-false}"
+KEEP_NETWORK="${KEEP_NETWORK:-true}"
 
 delete_instance_if_exists() {
   local name="$1"
@@ -44,6 +44,9 @@ delete_firewall_if_exists() {
 }
 
 echo "=== [1/5] Deleting billable compute instances ==="
+delete_instance_if_exists server
+delete_instance_if_exists node-0
+delete_instance_if_exists node-1
 delete_instance_if_exists controller-0
 delete_instance_if_exists worker-0
 delete_instance_if_exists worker-1
