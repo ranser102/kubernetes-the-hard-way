@@ -3,13 +3,10 @@
 # ==============================================================================
 # KTHW SCALE-DOWN: 1 CONTROLLER + 2 WORKERS PROVISIONING SCRIPT
 # ==============================================================================
-# Prerequisite: ./scripts/prereq01.sh (after init01.sh on a new project)
+# Prerequisite: ./scripts/01-prereq/init01.sh on a new project
 # Maps docs/01-prerequisites.md: server=controller-0, node-0/1=worker-0/1
 # ==============================================================================
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"${SCRIPT_DIR}/prereq01.sh"
 
 KTHW_REGION=$(gcloud config get-value compute/region)
 KTHW_ZONE=$(gcloud config get-value compute/zone)
