@@ -50,7 +50,9 @@ service-account-csr.json
 *.swp
 .idea/
 .vscode/
-/ktwh-downloads/
+/kthw-downloads/
 /scripts/hosts
 /scripts/hosts.internal
 /scripts/machines.txt
+/scripts/certs/
+/scripts/kubeconfigs/
