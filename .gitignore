@@ -56,3 +56,4 @@ service-account-csr.json
 /scripts/machines.txt
 /scripts/certs/
 /scripts/kubeconfigs/
+/scripts/secrets/
