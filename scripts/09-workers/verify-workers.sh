@@ -69,11 +69,16 @@ ssh "${SSH_OPTS[@]}" root@server \
   "kubectl get nodes --kubeconfig ~/admin.kubeconfig"
 
 for node in node-0 node-1; do
-  _check "${node} is Ready" \
-    ssh "${SSH_OPTS[@]}" root@server \
-      "kubectl get node ${node} --kubeconfig ~/admin.kubeconfig \
-       -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}' \
-       | grep -q True"
+  status="$(ssh "${SSH_OPTS[@]}" root@server \
+    "kubectl get node ${node} --kubeconfig ~/admin.kubeconfig \
+     -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'" 2>/dev/null || true)"
+  if [[ "${status}" == "True" ]]; then
+    echo "  PASS: ${node} is Ready"
+    (( PASS++ )) || true
+  else
+    echo "  FAIL: ${node} status is '${status:-unknown}' (expected 'True')"
+    (( FAIL++ )) || true
+  fi
 done
 
 # ------------------------------------------------------------------------------

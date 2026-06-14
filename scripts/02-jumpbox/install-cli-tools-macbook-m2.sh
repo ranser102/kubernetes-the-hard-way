@@ -14,7 +14,23 @@ TARGET_ARCH="amd64"   # Linux node binaries — GCP e2-small instances are x86_6
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DOWNLOADS_DIR="${ROOT_DIR}/kthw-downloads"
-DOWNLOAD_LIST="${SCRIPT_DIR}/downloads-${TARGET_ARCH}.txt"
+
+# Download URLs are generated from the version variables above.
+# Override any version at runtime, e.g:
+#   KUBERNETES_VERSION=v1.33.1 ./install-cli-tools-macbook-m2.sh --force
+DOWNLOAD_URLS=(
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kubectl"
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kube-apiserver"
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kube-controller-manager"
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kube-scheduler"
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kube-proxy"
+  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/linux/${TARGET_ARCH}/kubelet"
+  "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-${TARGET_ARCH}.tar.gz"
+  "https://github.com/opencontainers/runc/releases/download/v1.3.5/runc.${TARGET_ARCH}"
+  "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-${TARGET_ARCH}-${CNI_PLUGINS_VERSION}.tgz"
+  "https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${TARGET_ARCH}.tar.gz"
+  "https://github.com/etcd-io/etcd/releases/download/${ETCD_VERSION}/etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}.tar.gz"
+)
 
 FORCE=false
 for arg in "$@"; do
@@ -72,24 +88,18 @@ else
 fi
 
 echo "=== [4/6] Downloading Linux ${TARGET_ARCH} Kubernetes node binaries ==="
-if [[ ! -f "${DOWNLOAD_LIST}" ]]; then
-  echo "CRITICAL: Missing ${DOWNLOAD_LIST}"
-  exit 1
-fi
-
 mkdir -p "${DOWNLOADS_DIR}"
 
 # Build a filtered list of URLs whose target files are not yet present
 MISSING_URLS=()
-while IFS= read -r url || [[ -n "${url}" ]]; do
-  [[ -z "${url}" || "${url}" == \#* ]] && continue
+for url in "${DOWNLOAD_URLS[@]}"; do
   filename="$(basename "${url}")"
   if ! ${FORCE} && [[ -f "${DOWNLOADS_DIR}/${filename}" ]]; then
     echo "Already downloaded: ${filename} — skipping."
   else
     MISSING_URLS+=("${url}")
   fi
-done < "${DOWNLOAD_LIST}"
+done
 
 if [[ ${#MISSING_URLS[@]} -gt 0 ]]; then
   printf '%s\n' "${MISSING_URLS[@]}" | wget -q --show-progress \
