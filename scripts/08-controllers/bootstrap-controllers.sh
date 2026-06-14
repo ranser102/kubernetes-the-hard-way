@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-CERTS_DIR="${ROOT_DIR}/certs"
+CERTS_DIR="${ROOT_DIR}/scripts/certs"
 SSH_KEY="${KTHW_SSH_KEY_PATH:-${HOME}/.ssh/google_compute_engine}"
 
 FORCE=false
@@ -32,7 +32,13 @@ set -euo pipefail
 FORCE="${FORCE}"
 
 _bin_ok() {
-  [[ -x /usr/local/bin/\$1 ]] && /usr/local/bin/\$1 --version >/dev/null 2>&1
+  local bin="\$1"
+  [[ -x /usr/local/bin/\${bin} ]] || return 1
+  if [[ "\${bin}" == "kubectl" ]]; then
+    /usr/local/bin/kubectl version --client >/dev/null 2>&1
+  else
+    /usr/local/bin/\${bin} --version >/dev/null 2>&1
+  fi
 }
 
 mkdir -p /etc/kubernetes/config
@@ -40,10 +46,15 @@ mkdir -p /etc/kubernetes/config
 for bin in kube-apiserver kube-controller-manager kube-scheduler kubectl; do
   if [[ "\${FORCE}" != "true" ]] && _bin_ok "\${bin}"; then
     echo "\${bin} already installed and executable — skipping."
-  else
+  elif [[ -f ~/\${bin} ]]; then
     mv -f ~/\${bin} /usr/local/bin/
     chmod +x /usr/local/bin/\${bin}
     echo "Installed: \${bin}"
+  elif _bin_ok "\${bin}"; then
+    echo "\${bin} already at /usr/local/bin/ (no staged file in ~/) — skipping."
+  else
+    echo "ERROR: \${bin} not found in ~/ and not installed. Run copy-controller-files.sh first."
+    exit 1
   fi
 done
 REMOTE
@@ -55,46 +66,39 @@ FORCE="${FORCE}"
 
 mkdir -p /var/lib/kubernetes/
 
+_place() {
+  local src="\$1" dest="\$2"
+  local name="\$(basename "\${src}")"
+  if [[ "\${FORCE}" != "true" ]] && [[ -f "\${dest}" ]]; then
+    echo "Already in place: \${dest} — skipping."
+  elif [[ -f "\${src}" ]]; then
+    mv -f "\${src}" "\${dest}"
+    echo "Placed: \${dest}"
+  elif [[ -f "\${dest}" ]]; then
+    echo "Already in place: \${dest} (no staged file in ~/) — skipping."
+  else
+    echo "ERROR: \${name} not found in ~/ and not at \${dest}. Run copy-controller-files.sh first."
+    exit 1
+  fi
+}
+
 # Certs and encryption config
 for f in ca.crt ca.key kube-api-server.key kube-api-server.crt \
           service-accounts.key service-accounts.crt encryption-config.yaml; do
-  dest="/var/lib/kubernetes/\${f}"
-  if [[ "\${FORCE}" != "true" ]] && [[ -f "\${dest}" ]]; then
-    echo "Already in place: \${dest} — skipping."
-  else
-    mv -f ~/\${f} "\${dest}"
-    echo "Placed: \${dest}"
-  fi
+  _place ~/\${f} /var/lib/kubernetes/\${f}
 done
 
 # Kubeconfigs
 for f in kube-controller-manager.kubeconfig kube-scheduler.kubeconfig; do
-  dest="/var/lib/kubernetes/\${f}"
-  if [[ "\${FORCE}" != "true" ]] && [[ -f "\${dest}" ]]; then
-    echo "Already in place: \${dest} — skipping."
-  else
-    mv -f ~/\${f} "\${dest}"
-    echo "Placed: \${dest}"
-  fi
+  _place ~/\${f} /var/lib/kubernetes/\${f}
 done
 
 # Scheduler config
-if [[ "\${FORCE}" != "true" ]] && [[ -f /etc/kubernetes/config/kube-scheduler.yaml ]]; then
-  echo "Already in place: /etc/kubernetes/config/kube-scheduler.yaml — skipping."
-else
-  mv -f ~/kube-scheduler.yaml /etc/kubernetes/config/
-  echo "Placed: /etc/kubernetes/config/kube-scheduler.yaml"
-fi
+_place ~/kube-scheduler.yaml /etc/kubernetes/config/kube-scheduler.yaml
 
 # Unit files
 for unit in kube-apiserver.service kube-controller-manager.service kube-scheduler.service; do
-  dest="/etc/systemd/system/\${unit}"
-  if [[ "\${FORCE}" != "true" ]] && [[ -f "\${dest}" ]]; then
-    echo "Already in place: \${dest} — skipping."
-  else
-    mv -f ~/\${unit} "\${dest}"
-    echo "Placed: \${dest}"
-  fi
+  _place ~/\${unit} /etc/systemd/system/\${unit}
 done
 REMOTE
 
@@ -132,10 +136,10 @@ done
 REMOTE
 
 echo "=== [4/4] Applying RBAC for kubelet authorization ==="
-_remote_run <<REMOTE
+_remote_run <<'REMOTE'
 set -euo pipefail
 kubectl apply -f ~/kube-apiserver-to-kubelet.yaml \
-  --kubeconfig /var/lib/kubernetes/\$(ls ~/admin.kubeconfig 2>/dev/null && echo ~/admin.kubeconfig || echo /var/lib/kubernetes/admin.kubeconfig)
+  --kubeconfig ~/admin.kubeconfig
 REMOTE
 
 echo "=== Verifying control plane ==="
