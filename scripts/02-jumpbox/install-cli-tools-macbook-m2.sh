@@ -13,7 +13,7 @@ ETCD_VERSION="${ETCD_VERSION:-v3.6.11}"
 TARGET_ARCH="arm64"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-DOWNLOADS_DIR="${ROOT_DIR}/ktwh-downloads"
+DOWNLOADS_DIR="${ROOT_DIR}/kthw-downloads"
 DOWNLOAD_LIST="${SCRIPT_DIR}/downloads-${TARGET_ARCH}.txt"
 
 echo "=== [1/6] Validating macOS Apple Silicon workstation ==="
@@ -42,19 +42,28 @@ for formula in wget git vim openssl@3; do
 done
 
 echo "=== [3/6] Installing kubectl ${KUBERNETES_VERSION} for macOS arm64 ==="
-KUBECTL_TMP="$(mktemp)"
-trap 'rm -f "${KUBECTL_TMP}"' EXIT
+_kubectl_version_ok() {
+  [[ -x "${INSTALL_BIN}/kubectl" ]] && \
+    "${INSTALL_BIN}/kubectl" version --client 2>/dev/null | grep -q "${KUBERNETES_VERSION}"
+}
 
-curl -fL --retry 3 \
-  -o "${KUBECTL_TMP}" \
-  "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/darwin/arm64/kubectl"
-chmod +x "${KUBECTL_TMP}"
-
-mkdir -p "${INSTALL_BIN}"
-if [[ -w "${INSTALL_BIN}" ]]; then
-  install -m 0755 "${KUBECTL_TMP}" "${INSTALL_BIN}/kubectl"
+if _kubectl_version_ok; then
+  echo "kubectl ${KUBERNETES_VERSION} already installed at ${INSTALL_BIN}/kubectl — skipping download."
 else
-  sudo install -m 0755 "${KUBECTL_TMP}" "${INSTALL_BIN}/kubectl"
+  KUBECTL_TMP="$(mktemp)"
+  trap 'rm -f "${KUBECTL_TMP}"' EXIT
+
+  curl -fL --retry 3 \
+    -o "${KUBECTL_TMP}" \
+    "https://dl.k8s.io/${KUBERNETES_VERSION}/bin/darwin/arm64/kubectl"
+  chmod +x "${KUBECTL_TMP}"
+
+  mkdir -p "${INSTALL_BIN}"
+  if [[ -w "${INSTALL_BIN}" ]]; then
+    install -m 0755 "${KUBECTL_TMP}" "${INSTALL_BIN}/kubectl"
+  else
+    sudo install -m 0755 "${KUBECTL_TMP}" "${INSTALL_BIN}/kubectl"
+  fi
 fi
 
 echo "=== [4/6] Downloading Linux arm64 Kubernetes node binaries ==="
@@ -64,56 +73,86 @@ if [[ ! -f "${DOWNLOAD_LIST}" ]]; then
 fi
 
 mkdir -p "${DOWNLOADS_DIR}"
-wget -q --show-progress \
-  --https-only \
-  --timestamping \
-  -P "${DOWNLOADS_DIR}" \
-  -i "${DOWNLOAD_LIST}"
+
+# Build a filtered list of URLs whose target files are not yet present
+MISSING_URLS=()
+while IFS= read -r url || [[ -n "${url}" ]]; do
+  [[ -z "${url}" || "${url}" == \#* ]] && continue
+  filename="$(basename "${url}")"
+  if [[ -f "${DOWNLOADS_DIR}/${filename}" ]]; then
+    echo "Already downloaded: ${filename} — skipping."
+  else
+    MISSING_URLS+=("${url}")
+  fi
+done < "${DOWNLOAD_LIST}"
+
+if [[ ${#MISSING_URLS[@]} -gt 0 ]]; then
+  printf '%s\n' "${MISSING_URLS[@]}" | wget -q --show-progress \
+    --https-only \
+    -P "${DOWNLOADS_DIR}" \
+    -i -
+else
+  echo "All downloads already present — skipping wget."
+fi
 
 echo "=== [5/6] Organizing downloaded binaries ==="
-rm -rf \
-  "${DOWNLOADS_DIR}/client" \
-  "${DOWNLOADS_DIR}/cni-plugins" \
-  "${DOWNLOADS_DIR}/controller" \
-  "${DOWNLOADS_DIR}/worker"
-mkdir -p \
-  "${DOWNLOADS_DIR}/client" \
-  "${DOWNLOADS_DIR}/cni-plugins" \
-  "${DOWNLOADS_DIR}/controller" \
-  "${DOWNLOADS_DIR}/worker"
+_organized_ok() {
+  [[ -x "${DOWNLOADS_DIR}/client/kubectl" ]]            && \
+  [[ -x "${DOWNLOADS_DIR}/client/etcdctl" ]]            && \
+  [[ -x "${DOWNLOADS_DIR}/controller/kube-apiserver" ]] && \
+  [[ -x "${DOWNLOADS_DIR}/controller/etcd" ]]           && \
+  [[ -x "${DOWNLOADS_DIR}/worker/kubelet" ]]            && \
+  [[ -x "${DOWNLOADS_DIR}/worker/crictl" ]]             && \
+  [[ -x "${DOWNLOADS_DIR}/worker/runc" ]]
+}
 
-tar -xvf "${DOWNLOADS_DIR}/crictl-${CRICTL_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
-  -C "${DOWNLOADS_DIR}/worker/"
-tar -xvf "${DOWNLOADS_DIR}/containerd-${CONTAINERD_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
-  --strip-components 1 \
-  -C "${DOWNLOADS_DIR}/worker/"
-tar -xvf "${DOWNLOADS_DIR}/cni-plugins-linux-${TARGET_ARCH}-${CNI_PLUGINS_VERSION}.tgz" \
-  -C "${DOWNLOADS_DIR}/cni-plugins/"
-tar -xvf "${DOWNLOADS_DIR}/etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
-  -C "${DOWNLOADS_DIR}/" \
-  --strip-components 1 \
-  "etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}/etcdctl" \
-  "etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}/etcd"
+if _organized_ok; then
+  echo "Organized binaries already present — skipping extraction and layout."
+else
+  rm -rf \
+    "${DOWNLOADS_DIR}/client" \
+    "${DOWNLOADS_DIR}/cni-plugins" \
+    "${DOWNLOADS_DIR}/controller" \
+    "${DOWNLOADS_DIR}/worker"
+  mkdir -p \
+    "${DOWNLOADS_DIR}/client" \
+    "${DOWNLOADS_DIR}/cni-plugins" \
+    "${DOWNLOADS_DIR}/controller" \
+    "${DOWNLOADS_DIR}/worker"
 
-mv "${DOWNLOADS_DIR}/etcdctl" "${DOWNLOADS_DIR}/kubectl" \
-  "${DOWNLOADS_DIR}/client/"
-mv \
-  "${DOWNLOADS_DIR}/etcd" \
-  "${DOWNLOADS_DIR}/kube-apiserver" \
-  "${DOWNLOADS_DIR}/kube-controller-manager" \
-  "${DOWNLOADS_DIR}/kube-scheduler" \
-  "${DOWNLOADS_DIR}/controller/"
-mv \
-  "${DOWNLOADS_DIR}/kubelet" \
-  "${DOWNLOADS_DIR}/kube-proxy" \
-  "${DOWNLOADS_DIR}/worker/"
-mv "${DOWNLOADS_DIR}/runc.${TARGET_ARCH}" "${DOWNLOADS_DIR}/worker/runc"
+  tar -xvf "${DOWNLOADS_DIR}/crictl-${CRICTL_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
+    -C "${DOWNLOADS_DIR}/worker/"
+  tar -xvf "${DOWNLOADS_DIR}/containerd-${CONTAINERD_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
+    --strip-components 1 \
+    -C "${DOWNLOADS_DIR}/worker/"
+  tar -xvf "${DOWNLOADS_DIR}/cni-plugins-linux-${TARGET_ARCH}-${CNI_PLUGINS_VERSION}.tgz" \
+    -C "${DOWNLOADS_DIR}/cni-plugins/"
+  tar -xvf "${DOWNLOADS_DIR}/etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}.tar.gz" \
+    -C "${DOWNLOADS_DIR}/" \
+    --strip-components 1 \
+    "etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}/etcdctl" \
+    "etcd-${ETCD_VERSION}-linux-${TARGET_ARCH}/etcd"
 
-chmod +x \
-  "${DOWNLOADS_DIR}/client/"* \
-  "${DOWNLOADS_DIR}/cni-plugins/"* \
-  "${DOWNLOADS_DIR}/controller/"* \
-  "${DOWNLOADS_DIR}/worker/"*
+  mv "${DOWNLOADS_DIR}/etcdctl" "${DOWNLOADS_DIR}/kubectl" \
+    "${DOWNLOADS_DIR}/client/"
+  mv \
+    "${DOWNLOADS_DIR}/etcd" \
+    "${DOWNLOADS_DIR}/kube-apiserver" \
+    "${DOWNLOADS_DIR}/kube-controller-manager" \
+    "${DOWNLOADS_DIR}/kube-scheduler" \
+    "${DOWNLOADS_DIR}/controller/"
+  mv \
+    "${DOWNLOADS_DIR}/kubelet" \
+    "${DOWNLOADS_DIR}/kube-proxy" \
+    "${DOWNLOADS_DIR}/worker/"
+  mv "${DOWNLOADS_DIR}/runc.${TARGET_ARCH}" "${DOWNLOADS_DIR}/worker/runc"
+
+  chmod +x \
+    "${DOWNLOADS_DIR}/client/"* \
+    "${DOWNLOADS_DIR}/cni-plugins/"* \
+    "${DOWNLOADS_DIR}/controller/"* \
+    "${DOWNLOADS_DIR}/worker/"*
+fi
 
 echo "=== [6/6] Verifying kubectl ==="
 "${INSTALL_BIN}/kubectl" version --client

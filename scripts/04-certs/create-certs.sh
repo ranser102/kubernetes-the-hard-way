@@ -17,18 +17,28 @@ certs=(
 )
 
 for i in ${certs[*]}; do
-  openssl genrsa -out "${CERTS_DIR}/${i}.key" 4096
+  key="${CERTS_DIR}/${i}.key"
+  csr="${CERTS_DIR}/${i}.csr"
+  crt="${CERTS_DIR}/${i}.crt"
 
-  openssl req -new -key "${CERTS_DIR}/${i}.key" -sha256 \
+  if [[ -f "${key}" && -f "${crt}" ]] && \
+     openssl x509 -checkend 0 -noout -in "${crt}" 2>/dev/null; then
+    echo "Already exists and valid: ${i} — skipping."
+    continue
+  fi
+
+  openssl genrsa -out "${key}" 4096
+
+  openssl req -new -key "${key}" -sha256 \
     -config "${CERTS_DIR}/ca.conf" -section ${i} \
-    -out "${CERTS_DIR}/${i}.csr"
+    -out "${csr}"
 
-  openssl x509 -req -days 3653 -in "${CERTS_DIR}/${i}.csr" \
+  openssl x509 -req -days 3653 -in "${csr}" \
     -copy_extensions copyall \
     -sha256 -CA "${CERTS_DIR}/ca.crt" \
     -CAkey "${CERTS_DIR}/ca.key" \
     -CAcreateserial \
-    -out "${CERTS_DIR}/${i}.crt"
+    -out "${crt}"
 
 done
 

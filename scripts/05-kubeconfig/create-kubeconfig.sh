@@ -11,10 +11,19 @@ KUBECONFIG_DIR="${ROOT_DIR}/kubeconfigs"
 
 mkdir -p "${KUBECONFIG_DIR}"
 
+_kubeconfig_exists() {
+  [[ -f "${KUBECONFIG_DIR}/${1}.kubeconfig" ]]
+}
+
 # ------------------------------------------------------------------------------
 # Worker nodes (kubelet)
 # ------------------------------------------------------------------------------
 for host in node-0 node-1; do
+  if _kubeconfig_exists "${host}"; then
+    echo "Already exists: ${host}.kubeconfig — skipping."
+    continue
+  fi
+
   kubectl config set-cluster kubernetes-the-hard-way \
     --certificate-authority="${CERTS_DIR}/ca.crt" \
     --embed-certs=true \
@@ -39,7 +48,9 @@ done
 # ------------------------------------------------------------------------------
 # kube-proxy
 # ------------------------------------------------------------------------------
-{
+if _kubeconfig_exists "kube-proxy"; then
+  echo "Already exists: kube-proxy.kubeconfig — skipping."
+else
   kubectl config set-cluster kubernetes-the-hard-way \
     --certificate-authority="${CERTS_DIR}/ca.crt" \
     --embed-certs=true \
@@ -59,12 +70,14 @@ done
 
   kubectl config use-context default \
     --kubeconfig="${KUBECONFIG_DIR}/kube-proxy.kubeconfig"
-}
+fi
 
 # ------------------------------------------------------------------------------
 # kube-controller-manager
 # ------------------------------------------------------------------------------
-{
+if _kubeconfig_exists "kube-controller-manager"; then
+  echo "Already exists: kube-controller-manager.kubeconfig — skipping."
+else
   kubectl config set-cluster kubernetes-the-hard-way \
     --certificate-authority="${CERTS_DIR}/ca.crt" \
     --embed-certs=true \
@@ -84,12 +97,14 @@ done
 
   kubectl config use-context default \
     --kubeconfig="${KUBECONFIG_DIR}/kube-controller-manager.kubeconfig"
-}
+fi
 
 # ------------------------------------------------------------------------------
 # kube-scheduler
 # ------------------------------------------------------------------------------
-{
+if _kubeconfig_exists "kube-scheduler"; then
+  echo "Already exists: kube-scheduler.kubeconfig — skipping."
+else
   kubectl config set-cluster kubernetes-the-hard-way \
     --certificate-authority="${CERTS_DIR}/ca.crt" \
     --embed-certs=true \
@@ -109,12 +124,14 @@ done
 
   kubectl config use-context default \
     --kubeconfig="${KUBECONFIG_DIR}/kube-scheduler.kubeconfig"
-}
+fi
 
 # ------------------------------------------------------------------------------
 # admin
 # ------------------------------------------------------------------------------
-{
+if _kubeconfig_exists "admin"; then
+  echo "Already exists: admin.kubeconfig — skipping."
+else
   kubectl config set-cluster kubernetes-the-hard-way \
     --certificate-authority="${CERTS_DIR}/ca.crt" \
     --embed-certs=true \
@@ -134,7 +151,7 @@ done
 
   kubectl config use-context default \
     --kubeconfig="${KUBECONFIG_DIR}/admin.kubeconfig"
-}
+fi
 
 echo "=== Kubeconfig files generated successfully ==="
 echo "=== Kubeconfig files can be found in ${KUBECONFIG_DIR} ==="

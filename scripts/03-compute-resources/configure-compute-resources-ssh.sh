@@ -181,6 +181,8 @@ replace_hosts_block "${LOCAL_ETC_HOSTS}" "${LOCAL_HOSTS_FILE}"
 if [[ "${LOCAL_ETC_HOSTS}" == "/etc/hosts" ]]; then
   echo "=== [6/6] Validating regular SSH with cluster hostnames ==="
   for host in "${CLUSTER_HOSTS[@]}"; do
+    # Remove any stale known_hosts entry so a reprovisioned host key never blocks us
+    ssh-keygen -R "${host}" -f "${HOME}/.ssh/known_hosts" >/dev/null 2>&1 || true
     ssh -i "${SSH_KEY_PATH}" \
       -o BatchMode=yes \
       -o StrictHostKeyChecking=accept-new \
