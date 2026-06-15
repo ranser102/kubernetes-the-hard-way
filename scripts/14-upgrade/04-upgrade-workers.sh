@@ -20,6 +20,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 DOWNLOADS_DIR="${ROOT_DIR}/kthw-downloads"
 SSH_KEY="${KTHW_SSH_KEY_PATH:-${HOME}/.ssh/google_compute_engine}"
 
+TARGET_VERSION="${KUBERNETES_VERSION:-v1.33.1}"
+
 SSH_OPTS=(
   -i "${SSH_KEY}"
   -o BatchMode=yes
@@ -31,6 +33,20 @@ for node in node-0 node-1; do
   echo "======================================================"
   echo "  Upgrading worker: ${node}"
   echo "======================================================"
+
+  # ----------------------------------------------------------------------------
+  # Check if node is already at the target version — skip if so
+  # kubelet --version returns e.g. "Kubernetes v1.33.1"
+  # ----------------------------------------------------------------------------
+  CURRENT_VERSION="$(ssh "${SSH_OPTS[@]}" "root@${node}" \
+    "kubelet --version 2>/dev/null | awk '{print \$2}'" 2>/dev/null || true)"
+  echo "  Current kubelet: ${CURRENT_VERSION:-unknown}  Target: ${TARGET_VERSION}"
+
+  if [[ "${CURRENT_VERSION}" == "${TARGET_VERSION}" ]]; then
+    echo "  ${node} already at ${TARGET_VERSION} — skipping."
+    echo ""
+    continue
+  fi
 
   # ----------------------------------------------------------------------------
   # Copy new worker binaries to the node
@@ -97,6 +113,7 @@ REMOTE
   # ----------------------------------------------------------------------------
   echo "--- [3/3] Verifying ${node} is Ready ---"
   echo "  Waiting up to 30s for ${node} to become Ready..."
+  status=""
   for i in $(seq 1 30); do
     status="$(ssh "${SSH_OPTS[@]}" root@server \
       "kubectl get node ${node} --kubeconfig ~/admin.kubeconfig \

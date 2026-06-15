@@ -29,7 +29,16 @@ mkdir -p /var/lib/etcd-backup
 ETCDCTL_API=3 etcdctl snapshot save "${SNAPSHOT_PATH}" \
   --endpoints=http://127.0.0.1:2379
 echo "Snapshot saved: ${SNAPSHOT_PATH}"
-ETCDCTL_API=3 etcdctl snapshot status "${SNAPSHOT_PATH}" --write-out=table
+
+# Verify the snapshot file exists and has a non-zero size.
+# etcd v3.6 removed 'etcdctl snapshot status'; etcdutl is not bundled in this build.
+SNAP_SIZE="\$(stat -c '%s' "${SNAPSHOT_PATH}" 2>/dev/null || echo 0)"
+if [[ "\${SNAP_SIZE}" -gt 0 ]]; then
+  echo "Snapshot verified: \${SNAP_SIZE} bytes"
+else
+  echo "ERROR: Snapshot file is empty or missing"
+  exit 1
+fi
 REMOTE
 
 echo ""
@@ -44,6 +53,7 @@ echo "Local copy: ${LOCAL_BACKUP}/snapshot-${TIMESTAMP}.db"
 
 echo ""
 echo "=== etcd backup complete ==="
-echo "To restore if needed:"
-echo "  etcdctl snapshot restore ${LOCAL_BACKUP}/snapshot-${TIMESTAMP}.db --data-dir /var/lib/etcd-restore"
+echo "To restore if needed (etcd v3.6+):"
+echo "  etcdutl snapshot restore ${LOCAL_BACKUP}/snapshot-${TIMESTAMP}.db --data-dir /var/lib/etcd-restore"
+echo "  (use 'etcdctl snapshot restore' for etcd < v3.6)"
 echo "Next: run ./scripts/14-upgrade/02-download-new-binaries.sh"
