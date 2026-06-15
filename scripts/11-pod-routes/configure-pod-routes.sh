@@ -23,6 +23,7 @@
 # Note on persistence:
 #   `ip route add` is in-memory only and is lost on reboot.
 #   Routes are made persistent via /etc/network/interfaces.d/ (Debian 12).
+#   Sysctl forwarding settings are persisted in /etc/sysctl.d/kubernetes.conf.
 # ==============================================================================
 set -euo pipefail
 
@@ -43,7 +44,7 @@ SSH_OPTS=(
 # Read node internal IPs (10.240.0.x) and pod subnets (10.200.x.0/24)
 # Internal IPs come from hosts.internal; subnets come from machines.txt
 # ------------------------------------------------------------------------------
-echo "=== [1/3] Reading network topology ==="
+echo "=== [1/4] Reading network topology ==="
 
 _internal_ip() {
   grep "[[:space:]]${1}$" "${HOSTS_INTERNAL}" | awk '{print $1}'
@@ -105,11 +106,53 @@ fi
 REMOTE
 }
 
+# Helper: enable IP forwarding and loose reverse-path filtering on workers.
+# Required for cross-node pod traffic (10.200.x → 10.200.x) after reboot.
+# Without ip_forward=1 packets between pod subnets are dropped.
+# Strict rp_filter=1 rejects asymmetric return paths common in routed pod setups.
+_configure_forwarding() {
+  local host="$1"
+  ssh "${SSH_OPTS[@]}" "root@${host}" bash -s <<'REMOTE'
+set -euo pipefail
+
+SYSCTL_FILE="/etc/sysctl.d/kubernetes.conf"
+mkdir -p /etc/sysctl.d
+
+for param val in \
+  net.ipv4.ip_forward 1 \
+  net.ipv4.conf.all.rp_filter 2 \
+  net.ipv4.conf.default.rp_filter 2; do
+  if grep -qxF "${param} = ${val}" "${SYSCTL_FILE}" 2>/dev/null; then
+    echo "  ${param} already set — skipping."
+  else
+    # Remove any previous value for this param, then append the correct one.
+    if [[ -f "${SYSCTL_FILE}" ]]; then
+      sed -i "/^${param//./\\.}/d" "${SYSCTL_FILE}"
+    fi
+    echo "${param} = ${val}" >> "${SYSCTL_FILE}"
+    echo "  Set ${param} = ${val}"
+  fi
+done
+
+sysctl -p "${SYSCTL_FILE}" >/dev/null
+echo "  ip_forward=$(sysctl -n net.ipv4.ip_forward)  rp_filter=$(sysctl -n net.ipv4.conf.all.rp_filter)"
+REMOTE
+}
+
+echo ""
+echo "=== [2/4] Configuring IP forwarding on workers ==="
+
+echo "  --- node-0 ---"
+_configure_forwarding node-0
+
+echo "  --- node-1 ---"
+_configure_forwarding node-1
+
 # ------------------------------------------------------------------------------
 # Add routes — each machine gets routes to all OTHER nodes' pod subnets
 # ------------------------------------------------------------------------------
 echo ""
-echo "=== [2/3] Adding pod network routes ==="
+echo "=== [3/4] Adding pod network routes ==="
 
 echo "  --- server ---"
 _add_route server "${NODE_0_SUBNET}" "${NODE_0_IP}"
@@ -124,7 +167,7 @@ echo "  --- node-1 ---"
 _add_route node-1 "${NODE_0_SUBNET}" "${NODE_0_IP}"
 
 echo ""
-echo "=== [3/3] Route table summary ==="
+echo "=== [4/4] Route table summary ==="
 for host in server node-0 node-1; do
   echo "  --- ${host} ---"
   ssh "${SSH_OPTS[@]}" "root@${host}" \
