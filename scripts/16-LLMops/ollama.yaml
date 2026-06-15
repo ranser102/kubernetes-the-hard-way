@@ -141,8 +141,9 @@ spec:
             claimName: ollama-models-pvc
 ---
 # ------------------------------------------------------------------------------
-# Service — MUST be named "ollama-service" so Kubernetes injects
-# OLLAMA_SERVICE_SERVICE_HOST into the Open WebUI pod automatically.
+# Service — NodePort so Open WebUI on node-1 reaches Ollama via VPC IP
+# (10.240.0.20:31434) instead of cross-node pod routing (10.200.x).
+# Internal VPC firewall already allows all TCP between 10.240.0.0/24 nodes.
 # ------------------------------------------------------------------------------
 apiVersion: v1
 kind: Service
@@ -151,11 +152,12 @@ metadata:
   labels:
     app: ollama
 spec:
-  type: ClusterIP
+  type: NodePort
   selector:
     app: ollama
   ports:
     - name: http
       port: 11434
       targetPort: 11434
+      nodePort: 31434
       protocol: TCP

@@ -1,17 +1,17 @@
 # ==============================================================================
 # Open WebUI — Deployment + Service
 #
-# OLLAMA_BASE_URL uses the Kubernetes-injected service env var
-# (OLLAMA_SERVICE_SERVICE_HOST) instead of a DNS name, so this works without
-# CoreDNS.  This env var is auto-populated by Kubernetes for any Service named
-# "ollama-service" running in the same namespace.
+# Topology (KTHW without CoreDNS / cross-node pod routing):
+#   Ollama     → node-0  (ollama.yaml, NodePort 31434)
+#   Open WebUI → node-1  (this file)
 #
-# Service is ClusterIP for now → test with:
+# OLLAMA_BASE_URL points at node-0's internal VPC IP + Ollama NodePort.
+# This bypasses broken pod-to-pod routing (10.200.x → 10.200.x) after reboots
+# and avoids pulling the ~2 GB image onto node-0's limited boot disk.
+#
+# Access Open WebUI:
 #   kubectl port-forward svc/open-webui 8080:8080
 #   open http://localhost:8080
-#
-# When ready to expose via NodePort, replace the Service block below with
-# the commented-out NodePort block at the bottom of this file.
 # ==============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -29,10 +29,9 @@ spec:
       labels:
         app: open-webui
     spec:
-      # Co-locate with Ollama on node-0 so pod traffic stays on-node.
-      # Remove this nodeSelector once cross-node pod routes are restored.
+      # Run on node-1 — image is pre-pulled there; Ollama stays on node-0.
       nodeSelector:
-        kubernetes.io/hostname: node-0
+        kubernetes.io/hostname: node-1
       containers:
         - name: open-webui
           image: ghcr.io/open-webui/open-webui:main
@@ -40,12 +39,10 @@ spec:
             - containerPort: 8080
               protocol: TCP
           env:
-            # Kubernetes injects OLLAMA_SERVICE_SERVICE_HOST automatically when
-            # a Service named "ollama-service" exists in the same namespace.
-            # The $(VAR) syntax is resolved by the kubelet before the container
-            # starts — no DNS lookup involved.
+            # node-0 internal VPC IP (from provision-infra01.sh --private-network-ip)
+            # + Ollama NodePort (ollama.yaml). No CoreDNS or pod CIDR routing needed.
             - name: OLLAMA_BASE_URL
-              value: "http://$(OLLAMA_SERVICE_SERVICE_HOST):11434"
+              value: "http://10.240.0.20:31434"
           resources:
             requests:
               cpu: "1"
