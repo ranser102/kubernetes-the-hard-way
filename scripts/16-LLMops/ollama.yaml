@@ -1,0 +1,161 @@
+# ==============================================================================
+# Ollama — PersistentVolume + PersistentVolumeClaim + Deployment + Service
+#
+# Storage strategy (KTHW has no dynamic provisioner):
+#   A static hostPath PV is created on node-0 at /var/lib/ollama/models.
+#   The Deployment is pinned to node-0 via nodeSelector so the pod always
+#   lands on the same node as the PV data — model weights survive pod restarts.
+#
+# Service is named "ollama-service" so Kubernetes injects the env var
+#   OLLAMA_SERVICE_SERVICE_HOST into every pod in the same namespace,
+#   which is exactly what the Open WebUI manifest reads for OLLAMA_BASE_URL.
+#
+# After applying, pull your first model:
+#   kubectl exec -it deploy/ollama -- ollama pull llama3.2
+#   kubectl exec -it deploy/ollama -- ollama pull nomic-embed-text   # for RAG
+#
+# Typical model sizes (plan disk accordingly):
+#   llama3.2:3b   ~2 GB    gemma3:4b     ~3 GB
+#   llama3.2:8b   ~5 GB    mistral:7b    ~4 GB
+#   llama3.1:8b   ~5 GB    phi4:14b      ~9 GB
+#
+# Storage note:
+#   node-0 has a 20 GB boot disk. After OS + binaries + images ~8-12 GB is
+#   available, so the PV is capped at 10Gi.
+#   To store larger models, attach a dedicated data disk to node-0:
+#     gcloud compute disks create ollama-models-disk \
+#       --size=100GB --zone=<zone>
+#     gcloud compute instances attach-disk node-0 \
+#       --disk=ollama-models-disk --zone=<zone>
+#   Then format + mount it on node-0 at /var/lib/ollama/models and update
+#   the hostPath in this PV accordingly.
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# PersistentVolume — hostPath on node-0, 30 Gi reserved for model weights
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: ollama-models-pv
+  labels:
+    app: ollama
+spec:
+  capacity:
+    storage: 12Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  # nodeAffinity restricts which node can bind this PV.
+  # Must match the nodeSelector on the Deployment below.
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - node-0
+  hostPath:
+    path: /var/lib/ollama/models
+    type: DirectoryOrCreate
+---
+# ------------------------------------------------------------------------------
+# PersistentVolumeClaim
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models-pvc
+  labels:
+    app: ollama
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 12Gi
+  # Bind explicitly to the PV above (no dynamic provisioner in KTHW).
+  volumeName: ollama-models-pv
+  storageClassName: ""
+---
+# ------------------------------------------------------------------------------
+# Deployment
+# ------------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  labels:
+    app: ollama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      # Pin to node-0 so the pod always co-locates with the hostPath PV.
+      nodeSelector:
+        kubernetes.io/hostname: node-0
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - containerPort: 11434
+              protocol: TCP
+          env:
+            # Ollama reads OLLAMA_MODELS to locate its model store.
+            - name: OLLAMA_MODELS
+              value: /models
+          volumeMounts:
+            - name: models
+              mountPath: /models
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "14Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: 11434
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models-pvc
+---
+# ------------------------------------------------------------------------------
+# Service — MUST be named "ollama-service" so Kubernetes injects
+# OLLAMA_SERVICE_SERVICE_HOST into the Open WebUI pod automatically.
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-service
+  labels:
+    app: ollama
+spec:
+  type: ClusterIP
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+      protocol: TCP

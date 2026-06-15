@@ -1,0 +1,121 @@
+# ==============================================================================
+# Open WebUI — Deployment + Service
+#
+# OLLAMA_BASE_URL uses the Kubernetes-injected service env var
+# (OLLAMA_SERVICE_SERVICE_HOST) instead of a DNS name, so this works without
+# CoreDNS.  This env var is auto-populated by Kubernetes for any Service named
+# "ollama-service" running in the same namespace.
+#
+# Service is ClusterIP for now → test with:
+#   kubectl port-forward svc/open-webui 8080:8080
+#   open http://localhost:8080
+#
+# When ready to expose via NodePort, replace the Service block below with
+# the commented-out NodePort block at the bottom of this file.
+# ==============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      # Co-locate with Ollama on node-0 so pod traffic stays on-node.
+      # Remove this nodeSelector once cross-node pod routes are restored.
+      nodeSelector:
+        kubernetes.io/hostname: node-0
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:main
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            # Kubernetes injects OLLAMA_SERVICE_SERVICE_HOST automatically when
+            # a Service named "ollama-service" exists in the same namespace.
+            # The $(VAR) syntax is resolved by the kubelet before the container
+            # starts — no DNS lookup involved.
+            - name: OLLAMA_BASE_URL
+              value: "http://$(OLLAMA_SERVICE_SERVICE_HOST):11434"
+          resources:
+            requests:
+              cpu: "1"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 3
+---
+# ------------------------------------------------------------------------------
+# ClusterIP — use for port-forward testing (no firewall changes needed):
+#   kubectl port-forward svc/open-webui 8080:8080
+# ------------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  labels:
+    app: open-webui
+spec:
+  type: ClusterIP
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+# ------------------------------------------------------------------------------
+# NodePort — swap in when you are ready for browser access via node external IP:
+#   http://<node-external-ip>:32000
+#
+# Steps:
+#   1. Delete the ClusterIP service above (or replace this whole Service block)
+#   2. Apply this NodePort service
+#   3. Open firewall:
+#        gcloud compute firewall-rules create kthw-allow-open-webui \
+#          --network kubernetes-the-hard-way \
+#          --allow tcp:32000 \
+#          --source-ranges 0.0.0.0/0
+#
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: open-webui
+#   labels:
+#     app: open-webui
+# spec:
+#   type: NodePort
+#   selector:
+#     app: open-webui
+#   ports:
+#     - name: http
+#       port: 8080
+#       targetPort: 8080
+#       nodePort: 32000
+#       protocol: TCP
+# ------------------------------------------------------------------------------
