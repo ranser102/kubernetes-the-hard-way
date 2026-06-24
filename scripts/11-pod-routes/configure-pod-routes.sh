@@ -118,10 +118,7 @@ set -euo pipefail
 SYSCTL_FILE="/etc/sysctl.d/kubernetes.conf"
 mkdir -p /etc/sysctl.d
 
-for param val in \
-  net.ipv4.ip_forward 1 \
-  net.ipv4.conf.all.rp_filter 2 \
-  net.ipv4.conf.default.rp_filter 2; do
+while read -r param val; do
   if grep -qxF "${param} = ${val}" "${SYSCTL_FILE}" 2>/dev/null; then
     echo "  ${param} already set — skipping."
   else
@@ -132,7 +129,11 @@ for param val in \
     echo "${param} = ${val}" >> "${SYSCTL_FILE}"
     echo "  Set ${param} = ${val}"
   fi
-done
+done <<'SYSCTL_SETTINGS'
+net.ipv4.ip_forward 1
+net.ipv4.conf.all.rp_filter 2
+net.ipv4.conf.default.rp_filter 2
+SYSCTL_SETTINGS
 
 sysctl -p "${SYSCTL_FILE}" >/dev/null
 echo "  ip_forward=$(sysctl -n net.ipv4.ip_forward)  rp_filter=$(sysctl -n net.ipv4.conf.all.rp_filter)"
