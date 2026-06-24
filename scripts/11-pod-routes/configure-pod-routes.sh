@@ -11,18 +11,17 @@
 #   because neither node knows where to forward that traffic.
 #
 # Solution:
-#   Tell each node: "to reach pods on the OTHER node's subnet, forward
-#   traffic to that node's internal VPC IP (10.240.0.x)".
+#   Tell the GCP VPC fabric which worker owns each pod CIDR.
 #
-#   Routes added:
-#     server  : 10.200.0.0/24 → 10.240.0.20 (node-0)
-#               10.200.1.0/24 → 10.240.0.21 (node-1)
-#     node-0  : 10.200.1.0/24 → 10.240.0.21 (node-1)
-#     node-1  : 10.200.0.0/24 → 10.240.0.20 (node-0)
+#   GCP routes added:
+#     10.200.0.0/24 → next-hop-instance node-0
+#     10.200.1.0/24 → next-hop-instance node-1
 #
 # Note on persistence:
-#   `ip route add` is in-memory only and is lost on reboot.
-#   Routes are made persistent via /etc/network/interfaces.d/ (Debian 12).
+#   GCP routes are persistent cloud resources.
+#   Do NOT add direct Linux routes via the other worker's 10.240.0.x address.
+#   Nodes should send remote pod CIDRs to the GCP VPC gateway (10.240.0.1), and
+#   the cloud route then delivers the packet to the right next-hop instance.
 #   Sysctl forwarding settings are persisted in /etc/sysctl.d/kubernetes.conf.
 # ==============================================================================
 set -euo pipefail
@@ -32,6 +31,8 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 MACHINES_FILE="${ROOT_DIR}/scripts/machines.txt"
 HOSTS_INTERNAL="${ROOT_DIR}/scripts/hosts.internal"
 SSH_KEY="${KTHW_SSH_KEY_PATH:-${HOME}/.ssh/google_compute_engine}"
+KTHW_ZONE="${KTHW_ZONE:-$(gcloud config get-value compute/zone 2>/dev/null)}"
+NETWORK_NAME="${NETWORK_NAME:-kubernetes-the-hard-way}"
 
 SSH_OPTS=(
   -i "${SSH_KEY}"
@@ -45,6 +46,11 @@ SSH_OPTS=(
 # Internal IPs come from hosts.internal; subnets come from machines.txt
 # ------------------------------------------------------------------------------
 echo "=== [1/4] Reading network topology ==="
+
+if [[ -z "${KTHW_ZONE}" || "${KTHW_ZONE}" == "(unset)" ]]; then
+  echo "CRITICAL: compute/zone is not configured. Run: gcloud config set compute/zone <zone>"
+  exit 1
+fi
 
 _internal_ip() {
   grep "[[:space:]]${1}$" "${HOSTS_INTERNAL}" | awk '{print $1}'
@@ -69,39 +75,39 @@ done
 echo "  node-0: internal IP=${NODE_0_IP}  pod subnet=${NODE_0_SUBNET}"
 echo "  node-1: internal IP=${NODE_1_IP}  pod subnet=${NODE_1_SUBNET}"
 
-# Helper: add a route if it doesn't already exist, and persist it
-_add_route() {
-  local host="$1" subnet="$2" via="$3"
+# Helper: create the GCP VPC route for a worker pod CIDR if needed.
+_ensure_gcp_route() {
+  local name="$1" subnet="$2" instance="$3"
+
+  if gcloud compute routes describe "${name}" >/dev/null 2>&1; then
+    echo "  GCP route ${name} for ${subnet} already present — skipping."
+  else
+    gcloud compute routes create "${name}" \
+      --network "${NETWORK_NAME}" \
+      --destination-range "${subnet}" \
+      --next-hop-instance "${instance}" \
+      --next-hop-instance-zone "${KTHW_ZONE}"
+    echo "  Created GCP route ${name}: ${subnet} -> ${instance}"
+  fi
+}
+
+# Helper: remove old direct Linux pod routes from earlier versions of this repo.
+_remove_stale_linux_route() {
+  local host="$1" subnet="$2"
   ssh "${SSH_OPTS[@]}" "root@${host}" bash -s <<REMOTE
 set -euo pipefail
 
-# Detect the primary network interface from the default route
-# (GCP Debian VMs use ens4, other distros may use eth0, ens160, etc.)
-IFACE="\$(ip route show default | awk '/default/ {print \$5; exit}')"
-if [[ -z "\${IFACE}" ]]; then
-  echo "  ERROR: could not detect network interface"
-  exit 1
-fi
-
-# Add route in-memory (idempotent: skip if already present)
-# onlink + dev: GCP assigns VMs a /32 IP so the gateway is not on a directly
-# connected subnet from the kernel's view. onlink + dev overrides that check
-# and treats the next-hop as reachable on the named interface.
 if ip route show | grep -q "^${subnet}"; then
-  echo "  Route ${subnet} via ${via} already present — skipping."
+  ip route del "${subnet}" 2>/dev/null || true
+  echo "  Removed stale Linux route for ${subnet}"
 else
-  ip route add "${subnet}" via "${via}" dev "\${IFACE}" onlink
-  echo "  Added route: ${subnet} via ${via} dev \${IFACE}"
+  echo "  No stale Linux route for ${subnet}"
 fi
 
-# Persist across reboots via /etc/network/interfaces.d/
 PERSIST_FILE="/etc/network/interfaces.d/kthw-pod-routes.cfg"
-mkdir -p /etc/network/interfaces.d/
-if grep -q "${subnet}" "\${PERSIST_FILE}" 2>/dev/null; then
-  echo "  Persistence entry for ${subnet} already present — skipping."
-else
-  printf 'up ip route add %s via %s dev %s onlink\n' "${subnet}" "${via}" "\${IFACE}" >> "\${PERSIST_FILE}"
-  echo "  Persisted: ${subnet} via ${via} dev \${IFACE}"
+if [[ -f "\${PERSIST_FILE}" ]]; then
+  sed -i "\\|${subnet}|d" "\${PERSIST_FILE}"
+  echo "  Removed stale persistence entries for ${subnet}"
 fi
 REMOTE
 }
@@ -141,7 +147,7 @@ REMOTE
 }
 
 echo ""
-echo "=== [2/4] Configuring IP forwarding on workers ==="
+echo "=== [2/5] Configuring IP forwarding on workers ==="
 
 echo "  --- node-0 ---"
 _configure_forwarding node-0
@@ -153,26 +159,30 @@ _configure_forwarding node-1
 # Add routes — each machine gets routes to all OTHER nodes' pod subnets
 # ------------------------------------------------------------------------------
 echo ""
-echo "=== [3/4] Adding pod network routes ==="
-
-echo "  --- server ---"
-_add_route server "${NODE_0_SUBNET}" "${NODE_0_IP}"
-_add_route server "${NODE_1_SUBNET}" "${NODE_1_IP}"
-
-echo "  --- node-0 ---"
-# node-0 only needs a route to node-1 (it already owns NODE_0_SUBNET locally)
-_add_route node-0 "${NODE_1_SUBNET}" "${NODE_1_IP}"
-
-echo "  --- node-1 ---"
-# node-1 only needs a route to node-0
-_add_route node-1 "${NODE_0_SUBNET}" "${NODE_0_IP}"
+echo ""
+echo "=== [3/5] Creating GCP VPC pod CIDR routes ==="
+_ensure_gcp_route "kubernetes-route-10-200-0-0-24" "${NODE_0_SUBNET}" "node-0"
+_ensure_gcp_route "kubernetes-route-10-200-1-0-24" "${NODE_1_SUBNET}" "node-1"
 
 echo ""
-echo "=== [4/4] Route table summary ==="
+echo "=== [4/5] Removing stale direct Linux pod routes ==="
+
+echo "  --- server ---"
+_remove_stale_linux_route server "${NODE_0_SUBNET}"
+_remove_stale_linux_route server "${NODE_1_SUBNET}"
+
+echo "  --- node-0 ---"
+_remove_stale_linux_route node-0 "${NODE_1_SUBNET}"
+
+echo "  --- node-1 ---"
+_remove_stale_linux_route node-1 "${NODE_0_SUBNET}"
+
+echo ""
+echo "=== [5/5] Route table summary ==="
 for host in server node-0 node-1; do
   echo "  --- ${host} ---"
   ssh "${SSH_OPTS[@]}" "root@${host}" \
-    "ip route show | grep -E '10\.200\.' || echo '  (no pod routes found)'"
+    "ip route show | awk '/10\\.200\\./ { found = 1; print } END { if (!found) print \"  (no pod routes found)\" }'"
 done
 
 echo ""

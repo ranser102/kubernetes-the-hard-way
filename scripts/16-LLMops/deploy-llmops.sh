@@ -13,7 +13,7 @@
 #   3. Wait for both pods to be Ready
 #   4. Pull the default model into Ollama  (skips if already present)
 #   5. List models installed in Ollama
-#   6. Rollout-restart Open WebUI so it picks up OLLAMA_SERVICE_SERVICE_HOST
+#   6. Rollout-restart Open WebUI so it reconnects after Ollama/model setup
 #   7. Start kubectl port-forward → http://localhost:8080
 #
 # Override the model via env var:
@@ -26,6 +26,7 @@ OLLAMA_MANIFEST="${SCRIPT_DIR}/ollama.yaml"
 WEBUI_MANIFEST="${SCRIPT_DIR}/open-webui.yaml"
 
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2}"
+OLLAMA_CLUSTER_IP="10.0.0.207"
 POD_READY_TIMEOUT="${POD_READY_TIMEOUT:-300}"   # seconds
 LOCAL_PORT="${LOCAL_PORT:-8080}"
 
@@ -64,8 +65,16 @@ wait_for_deployment() {
 log "======================================================"
 log "  KTHW LLMOps — Deploy Ollama + Open WebUI"
 log "  Model : ${OLLAMA_MODEL}"
+log "  Ollama ClusterIP : ${OLLAMA_CLUSTER_IP}"
 log "======================================================"
 echo ""
+
+existing_cluster_ip="$(kubectl get svc ollama-service \
+  -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)"
+if [[ -n "${existing_cluster_ip}" && "${existing_cluster_ip}" != "${OLLAMA_CLUSTER_IP}" ]]; then
+  info "[1/7] Recreating ollama-service to use fixed ClusterIP ${OLLAMA_CLUSTER_IP}..."
+  kubectl delete svc ollama-service
+fi
 
 info "[1/7] Applying Ollama manifests..."
 kubectl apply -f "${OLLAMA_MANIFEST}"
@@ -125,10 +134,10 @@ echo ""
 
 # ==============================================================================
 # [6/7] Rollout-restart Open WebUI
-# Open WebUI must start AFTER ollama-service exists so Kubernetes injects
-# OLLAMA_SERVICE_SERVICE_HOST into its environment.
+# Restart after Ollama is ready and the model is present so Open WebUI connects
+# to the fixed Ollama ClusterIP from open-webui.yaml.
 # ==============================================================================
-info "[6/7] Restarting Open WebUI to pick up Ollama service env var..."
+info "[6/7] Restarting Open WebUI to reconnect to Ollama..."
 kubectl rollout restart deployment/open-webui
 kubectl rollout status deployment/open-webui --timeout="${POD_READY_TIMEOUT}s"
 ok "Open WebUI is Ready."

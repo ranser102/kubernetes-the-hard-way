@@ -6,9 +6,8 @@
 #   The Deployment is pinned to node-0 via nodeSelector so the pod always
 #   lands on the same node as the PV data — model weights survive pod restarts.
 #
-# Service is named "ollama-service" so Kubernetes injects the env var
-#   OLLAMA_SERVICE_SERVICE_HOST into every pod in the same namespace,
-#   which is exactly what the Open WebUI manifest reads for OLLAMA_BASE_URL.
+# Service is assigned a fixed ClusterIP because this KTHW cluster does not run
+# CoreDNS. Open WebUI reaches Ollama at http://10.0.0.207:11434.
 #
 # After applying, pull your first model:
 #   kubectl exec -it deploy/ollama -- ollama pull llama3.2
@@ -20,19 +19,15 @@
 #   llama3.1:8b   ~5 GB    phi4:14b      ~9 GB
 #
 # Storage note:
-#   node-0 has a 20 GB boot disk. After OS + binaries + images ~8-12 GB is
-#   available, so the PV is capped at 10Gi.
-#   To store larger models, attach a dedicated data disk to node-0:
-#     gcloud compute disks create ollama-models-disk \
-#       --size=100GB --zone=<zone>
-#     gcloud compute instances attach-disk node-0 \
-#       --disk=ollama-models-disk --zone=<zone>
-#   Then format + mount it on node-0 at /var/lib/ollama/models and update
-#   the hostPath in this PV accordingly.
+#   Module 17 creates node-0 with a 100 GB boot persistent disk, so this hostPath
+#   PV reserves 70Gi for Ollama model data while leaving room for the OS,
+#   Kubernetes binaries, logs, and container images.
+#   If you override WORKER_BOOT_DISK_SIZE in module 17, keep this PV/PVC request
+#   below the actual free space on node-0.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# PersistentVolume — hostPath on node-0, 30 Gi reserved for model weights
+# PersistentVolume — hostPath on node-0, 70 Gi reserved for model weights
 # ------------------------------------------------------------------------------
 apiVersion: v1
 kind: PersistentVolume
@@ -42,7 +37,7 @@ metadata:
     app: ollama
 spec:
   capacity:
-    storage: 12Gi
+    storage: 70Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
@@ -74,7 +69,7 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 12Gi
+      storage: 70Gi
   # Bind explicitly to the PV above (no dynamic provisioner in KTHW).
   volumeName: ollama-models-pv
   storageClassName: ""
@@ -141,9 +136,8 @@ spec:
             claimName: ollama-models-pvc
 ---
 # ------------------------------------------------------------------------------
-# Service — NodePort so Open WebUI on node-1 reaches Ollama via VPC IP
-# (10.240.0.20:31434) instead of cross-node pod routing (10.200.x).
-# Internal VPC firewall already allows all TCP between 10.240.0.0/24 nodes.
+# Service — fixed ClusterIP from the live KTHW service CIDR (10.0.0.0/24).
+# CoreDNS is not installed, so Open WebUI uses this IP directly.
 # ------------------------------------------------------------------------------
 apiVersion: v1
 kind: Service
@@ -152,12 +146,24 @@ metadata:
   labels:
     app: ollama
 spec:
-  type: NodePort
+  type: ClusterIP
+  clusterIP: 10.0.0.207
   selector:
     app: ollama
   ports:
     - name: http
       port: 11434
       targetPort: 11434
-      nodePort: 31434
       protocol: TCP
+
+# ------------------------------------------------------------------------------
+# NodePort fallback — use only if cross-node pod routing or ClusterIP breaks:
+#   type: NodePort
+#   ports:
+#     - name: http
+#       port: 11434
+#       targetPort: 11434
+#       nodePort: 31434
+#       protocol: TCP
+# Open WebUI fallback URL: http://10.240.0.20:31434
+# ------------------------------------------------------------------------------

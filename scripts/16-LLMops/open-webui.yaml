@@ -1,13 +1,12 @@
 # ==============================================================================
 # Open WebUI — Deployment + Service
 #
-# Topology (KTHW without CoreDNS / cross-node pod routing):
-#   Ollama     → node-0  (ollama.yaml, NodePort 31434)
+# Topology (KTHW without CoreDNS):
+#   Ollama     → node-0  (ollama.yaml, fixed ClusterIP 10.0.0.207)
 #   Open WebUI → node-1  (this file)
 #
-# OLLAMA_BASE_URL points at node-0's internal VPC IP + Ollama NodePort.
-# This bypasses broken pod-to-pod routing (10.200.x → 10.200.x) after reboots
-# and avoids pulling the ~2 GB image onto node-0's limited boot disk.
+# OLLAMA_BASE_URL points at Ollama's fixed ClusterIP. This avoids CoreDNS while
+# still using standard Kubernetes Service routing instead of NodePort.
 #
 # Access Open WebUI:
 #   kubectl port-forward svc/open-webui 8080:8080
@@ -39,10 +38,9 @@ spec:
             - containerPort: 8080
               protocol: TCP
           env:
-            # node-0 internal VPC IP (from provision-infra01.sh --private-network-ip)
-            # + Ollama NodePort (ollama.yaml). No CoreDNS or pod CIDR routing needed.
+            # Fixed ClusterIP from ollama.yaml. No CoreDNS required.
             - name: OLLAMA_BASE_URL
-              value: "http://10.240.0.20:31434"
+              value: "http://10.0.0.207:11434"
           resources:
             requests:
               cpu: "1"

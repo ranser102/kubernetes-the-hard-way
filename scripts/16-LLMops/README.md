@@ -9,29 +9,31 @@
 
 Internal VPC IPs (static): `node-0` = `10.240.0.20`, `node-1` = `10.240.0.21`
 
-## Connectivity (node-1 → node-0)
+Ollama stores model data in a `70Gi` hostPath PV on `node-0`. This assumes the
+LLMOps infrastructure path from module 17, where worker boot disks default to
+`100GB`. If you use smaller workers, reduce the PV/PVC size in `ollama.yaml`.
 
-We do **not** rely on cross-node pod routing (`10.200.x` → `10.200.x`) or CoreDNS.
+## Connectivity
 
-Instead, Open WebUI reaches Ollama over the **VPC network**:
+This KTHW cluster does not run CoreDNS, so Open WebUI cannot use the
+`ollama-service` DNS name.
+
+Instead, Ollama uses a fixed ClusterIP from the service CIDR (`10.0.0.0/24`),
+and Open WebUI connects to that IP directly:
 
 ```
 Open WebUI pod (node-1, 10.200.1.x)
-  → http://10.240.0.20:31434   (node-0 internal IP + NodePort)
-  → kube-proxy on node-0
+  → http://10.0.0.207:11434   (ollama-service ClusterIP)
+  → kube-proxy
   → Ollama pod (node-0, 10.200.0.x)
 ```
 
 Manifest settings:
 
-- `ollama.yaml` — Service `ollama-service` is **NodePort** `31434`
-- `open-webui.yaml` — `OLLAMA_BASE_URL=http://10.240.0.20:31434`, pinned to **node-1**
+- `ollama.yaml` — Service `ollama-service` is **ClusterIP** `10.0.0.207`
+- `open-webui.yaml` — `OLLAMA_BASE_URL=http://10.0.0.207:11434`, pinned to **node-1**
 
-No extra GCP firewall rule is needed: the internal rule already allows all TCP between `10.240.0.0/24` and `10.200.0.0/16`.
-
-### Why not ClusterIP?
-
-ClusterIP and pod IPs route through the pod CIDR (`10.200.0.0/16`). After a node stop/start (e.g. machine-type resize), static pod routes from [configure-pod-routes.sh](../11-pod-routes/configure-pod-routes.sh) may exist but **pod-to-pod traffic can still fail** (`No route to host` / connection timeout). VPC routing between node internal IPs continues to work.
+No NodePort or extra external firewall rule is needed for Ollama.
 
 ## Deploy
 
@@ -52,26 +54,27 @@ kubectl port-forward svc/open-webui 8080:8080
 # → http://localhost:8080
 ```
 
-Or use `./scripts/16-LLMops/deploy-llmops.sh` (update it if env/NodePort defaults drift from the manifests).
+Or use `./scripts/16-LLMops/deploy-llmops.sh`.
 
 ## Verify Ollama connectivity
-
-From node-1 host (VPC + NodePort — should work today):
-
-```bash
-ssh root@node-1 "curl -s http://10.240.0.20:31434/api/tags"
-```
 
 From Open WebUI pod:
 
 ```bash
 kubectl exec deploy/open-webui -- python3 -c "
 import urllib.request, json
-print(json.loads(urllib.request.urlopen('http://10.240.0.20:31434/api/tags').read()))
+print(json.loads(urllib.request.urlopen('http://10.0.0.207:11434/api/tags').read()))
 "
 ```
 
-Suspected causes when pod routing fails after reboot: missing static routes **or** worker sysctl not restored. Re-run [configure-pod-routes.sh](../11-pod-routes/configure-pod-routes.sh) — it now applies both routes and sysctl on workers.
+From node-1 host:
+
+```bash
+ssh root@node-1 "curl -s http://10.0.0.207:11434/api/tags"
+```
+
+If this fails, rerun [configure-pod-routes.sh](../11-pod-routes/configure-pod-routes.sh)
+and [verify-cross-node-pods.sh](../11-pod-routes/verify-cross-node-pods.sh).
 
 ## Node sysctl (cross-node pod routing)
 
@@ -105,26 +108,22 @@ Verify on a worker:
 ssh root@node-0 "sysctl net.ipv4.ip_forward net.ipv4.conf.all.rp_filter"
 ```
 
-## TODO — Verify cross-node pod connectivity
+## Verify Cross-Node Pod Connectivity
 
-LLMOps currently uses **NodePort + VPC IP** (works without pod routing). After sysctl + routes are applied, confirm pod CIDR routing so you can optionally switch back to ClusterIP later.
+LLMOps uses ClusterIP, so cross-node pod networking must work.
 
-- [ ] Run `./scripts/11-pod-routes/configure-pod-routes.sh` (routes + sysctl)
-- [ ] Run `./scripts/11-pod-routes/verify-pod-routes.sh`
-- [ ] Confirm cross-node pod reachability:
+```bash
+./scripts/11-pod-routes/configure-pod-routes.sh
+./scripts/11-pod-routes/verify-pod-routes.sh
+./scripts/11-pod-routes/verify-cross-node-pods.sh
+```
 
-  ```bash
-  OLLAMA_IP=$(kubectl get pod -l app=ollama -o jsonpath='{.items[0].status.podIP}')
+You can also test Ollama's direct Pod IP:
 
-  ssh root@node-1 "curl -s --connect-timeout 5 http://${OLLAMA_IP}:11434/api/tags"
+```bash
+OLLAMA_IP=$(kubectl get pod -l app=ollama -o jsonpath='{.items[0].status.podIP}')
+ssh root@node-1 "curl -s --connect-timeout 5 http://${OLLAMA_IP}:11434/api/tags"
+```
 
-  kubectl exec deploy/open-webui -- python3 -c "
-  import urllib.request
-  urllib.request.urlopen('http://${OLLAMA_IP}:11434/api/tags', timeout=10)
-  print('pod-to-pod OK')
-  "
-  ```
-
-- [ ] If pod routing works, optionally simplify back to ClusterIP:
-  - `OLLAMA_BASE_URL=http://10.0.0.207:11434` (or `http://ollama-service:11434` once CoreDNS is installed)
-  - Ollama Service type back to `ClusterIP`
+If CoreDNS is added later, `OLLAMA_BASE_URL` can be changed to
+`http://ollama-service:11434`.

@@ -232,6 +232,9 @@ run_step "[11] Configure pod routes" \
 if [[ "${RUN_VERIFY}" == "true" ]]; then
   run_step "[11] Verify pod routes" \
     "${ROOT_DIR}/scripts/11-pod-routes/verify-pod-routes.sh"
+
+  run_step "[11] Verify cross-node pod traffic" \
+    "${ROOT_DIR}/scripts/11-pod-routes/verify-cross-node-pods.sh"
 fi
 
 if [[ "${RUN_SMOKE_TEST}" == "true" ]]; then
